@@ -1,4 +1,4 @@
-'''Builders for distributed training.'''
+"""Builders for distributed training."""
 
 import multiprocessing
 
@@ -6,7 +6,7 @@ import numpy as np
 
 
 class Sequential:
-    '''A group of environments used in sequence.'''
+    """A group of environments used in sequence."""
 
     def __init__(self, environment_builder, max_episode_steps, workers):
         self.environments = [environment_builder() for _ in range(workers)]
@@ -16,12 +16,17 @@ class Sequential:
         self.name = self.environments[0].name
 
     def initialize(self, seed):
-        for i, environment in enumerate(self.environments):
-            environment.seed(seed + i)
+        # for i, environment in enumerate(self.environments):
+        #     environment.seed(seed + i)
+        pass
 
     def start(self):
-        '''Used once to get the initial observations.'''
-        observations = [env.reset() for env in self.environments]
+        """Used once to get the initial observations."""
+        # observations = [env.reset() for env in self.environments]
+        observations = []
+        for env in self.environments:
+            obs, _ = env.reset()
+            observations.append(obs)
         self.lengths = np.zeros(len(self.environments), int)
         return np.array(observations, np.float32)
 
@@ -33,18 +38,19 @@ class Sequential:
         observations = []  # Observations for the actions selection.
 
         for i in range(len(self.environments)):
-            ob, rew, term, _ = self.environments[i].step(actions[i])
+            ob, rew, term, truc, _ = self.environments[i].step(actions[i])
 
             self.lengths[i] += 1
             # Timeouts trigger resets but are not true terminations.
-            reset = term or self.lengths[i] == self.max_episode_steps
+            # reset = term or self.lengths[i] == self.max_episode_steps
+            reset = term or truc
             next_observations.append(ob)
             rewards.append(rew)
             resets.append(reset)
             terminations.append(term)
 
             if reset:
-                ob = self.environments[i].reset()
+                ob, _ = self.environments[i].reset()
                 self.lengths[i] = 0
 
             observations.append(ob)
@@ -53,25 +59,25 @@ class Sequential:
         infos = dict(
             observations=np.array(next_observations, np.float32),
             rewards=np.array(rewards, np.float32),
-            resets=np.array(resets, np.bool),
-            terminations=np.array(terminations, np.bool))
+            resets=np.array(resets, np.bool_),
+            terminations=np.array(terminations, np.bool_),
+        )
         return observations, infos
 
-    def render(self, mode='human', *args, **kwargs):
+    def render(self, mode="human", *args, **kwargs):
         outs = []
         for env in self.environments:
             out = env.render(mode=mode, *args, **kwargs)
             outs.append(out)
-        if mode != 'human':
+        if mode != "human":
             return np.array(outs)
 
 
 class Parallel:
-    '''A group of sequential environments used in parallel.'''
+    """A group of sequential environments used in parallel."""
 
     def __init__(
-        self, environment_builder, worker_groups, workers_per_group,
-        max_episode_steps
+        self, environment_builder, worker_groups, workers_per_group, max_episode_steps
     ):
         self.environment_builder = environment_builder
         self.worker_groups = worker_groups
@@ -80,10 +86,10 @@ class Parallel:
 
     def initialize(self, seed):
         def proc(action_pipe, index, seed):
-            '''Process holding a sequential group of environments.'''
+            """Process holding a sequential group of environments."""
             envs = Sequential(
-                self.environment_builder, self.max_episode_steps,
-                self.workers_per_group)
+                self.environment_builder, self.max_episode_steps, self.workers_per_group
+            )
             envs.initialize(seed)
 
             observations = envs.start()
@@ -108,12 +114,13 @@ class Parallel:
             self.action_pipes.append(pipe)
             group_seed = seed + i * self.workers_per_group
             process = multiprocessing.Process(
-                target=proc, args=(worker_end, i, group_seed))
+                target=proc, args=(worker_end, i, group_seed)
+            )
             process.daemon = True
             process.start()
 
     def start(self):
-        '''Used once to get the initial observations.'''
+        """Used once to get the initial observations."""
         assert not self.started
         self.started = True
         observations_list = [None for _ in range(self.worker_groups)]
@@ -125,11 +132,14 @@ class Parallel:
         self.observations_list = np.array(observations_list)
         self.next_observations_list = np.zeros_like(self.observations_list)
         self.rewards_list = np.zeros(
-            (self.worker_groups, self.workers_per_group), np.float32)
+            (self.worker_groups, self.workers_per_group), np.float32
+        )
         self.resets_list = np.zeros(
-            (self.worker_groups, self.workers_per_group), np.bool)
+            (self.worker_groups, self.workers_per_group), np.bool
+        )
         self.terminations_list = np.zeros(
-            (self.worker_groups, self.workers_per_group), np.bool)
+            (self.worker_groups, self.workers_per_group), np.bool
+        )
 
         return np.concatenate(self.observations_list)
 
@@ -141,32 +151,37 @@ class Parallel:
         for _ in range(self.worker_groups):
             index, (observations, infos) = self.output_queue.get()
             self.observations_list[index] = observations
-            self.next_observations_list[index] = infos['observations']
-            self.rewards_list[index] = infos['rewards']
-            self.resets_list[index] = infos['resets']
-            self.terminations_list[index] = infos['terminations']
+            self.next_observations_list[index] = infos["observations"]
+            self.rewards_list[index] = infos["rewards"]
+            self.resets_list[index] = infos["resets"]
+            self.terminations_list[index] = infos["terminations"]
 
         observations = np.concatenate(self.observations_list)
         infos = dict(
             observations=np.concatenate(self.next_observations_list),
             rewards=np.concatenate(self.rewards_list),
             resets=np.concatenate(self.resets_list),
-            terminations=np.concatenate(self.terminations_list))
+            terminations=np.concatenate(self.terminations_list),
+        )
         return observations, infos
 
 
 def distribute(environment_builder, worker_groups=1, workers_per_group=1):
-    '''Distributes workers over parallel and sequential groups.'''
+    """Distributes workers over parallel and sequential groups."""
     dummy_environment = environment_builder()
     max_episode_steps = dummy_environment.max_episode_steps
     del dummy_environment
 
     if worker_groups < 2:
         return Sequential(
-            environment_builder, max_episode_steps=max_episode_steps,
-            workers=workers_per_group)
+            environment_builder,
+            max_episode_steps=max_episode_steps,
+            workers=workers_per_group,
+        )
 
     return Parallel(
-        environment_builder, worker_groups=worker_groups,
+        environment_builder,
+        worker_groups=worker_groups,
         workers_per_group=workers_per_group,
-        max_episode_steps=max_episode_steps)
+        max_episode_steps=max_episode_steps,
+    )

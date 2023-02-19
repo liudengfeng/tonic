@@ -1,12 +1,12 @@
-'''Environment wrappers.'''
+"""Environment wrappers."""
 
-import gym
+import gymnasium as gym
 import numpy as np
 
 
 class ActionRescaler(gym.ActionWrapper):
-    '''Rescales actions from [-1, 1]^n to the true action space.
-    The baseline agents return actions in [-1, 1]^n.'''
+    """Rescales actions from [-1, 1]^n to the true action space.
+    The baseline agents return actions in [-1, 1]^n."""
 
     def __init__(self, env):
         assert isinstance(env.action_space, gym.spaces.Box)
@@ -23,16 +23,17 @@ class ActionRescaler(gym.ActionWrapper):
 
 
 class TimeFeature(gym.Wrapper):
-    '''Adds a notion of time in the observations.
+    """Adds a notion of time in the observations.
     It can be used in terminal timeout settings to get Markovian MDPs.
-    '''
+    """
 
     def __init__(self, env, max_steps, low=-1, high=1):
         super().__init__(env)
         dtype = self.observation_space.dtype
         self.observation_space = gym.spaces.Box(
             low=np.append(self.observation_space.low, low).astype(dtype),
-            high=np.append(self.observation_space.high, high).astype(dtype))
+            high=np.append(self.observation_space.high, high).astype(dtype),
+        )
         self.max_episode_steps = max_steps
         self.steps = 0
         self.low = low
@@ -40,15 +41,15 @@ class TimeFeature(gym.Wrapper):
 
     def reset(self, **kwargs):
         self.steps = 0
-        observation = self.env.reset(**kwargs)
+        observation, info = self.env.reset(**kwargs)
         observation = np.append(observation, self.low)
-        return observation
+        return observation, info
 
     def step(self, action):
         assert self.steps < self.max_episode_steps
-        observation, reward, done, info = self.env.step(action)
+        observation, reward, terminated, truncated, info = self.env.step(action)
         self.steps += 1
         prop = self.steps / self.max_episode_steps
         v = self.low + (self.high - self.low) * prop
         observation = np.append(observation, v)
-        return observation, reward, done, info
+        return observation, reward, terminated, truncated, info
